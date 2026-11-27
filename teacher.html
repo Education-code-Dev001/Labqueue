@@ -1,0 +1,80 @@
+<!doctype html><html lang="th"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LabQueue – ครู</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#14213d;--mut:#5b6578;--paper:#f3f6fb;--blue:#2457ff;--amber:#f4a100;--teal:#0f9d8a;--grey:#9aa3b2;--red:#d62839}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.4 "Noto Sans Thai",Tahoma,sans-serif}
+.hide{display:none}.err{color:var(--red)}
+#login{max-width:340px;margin:12vh auto;padding:24px;background:#fff;border:2px solid var(--ink);border-radius:16px}
+input,button{font:inherit;padding:10px 12px;border-radius:10px;border:2px solid #cfd6e4;width:100%;margin-top:8px}
+button{background:var(--blue);color:#fff;border:0;font-weight:700;cursor:pointer}
+#app{display:grid;grid-template-columns:minmax(0,3fr) minmax(280px,2fr);gap:16px;padding:16px}
+@media(max-width:800px){#app{grid-template-columns:1fr}}
+h2{margin:0 0 8px;font-size:18px}
+#grid{display:grid;grid-template-columns:repeat(8,1fr);gap:6px}
+.d{aspect-ratio:1;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#fff;border:2px solid #dbe2ef}
+.d b{font-size:20px}.d small{font-size:12px}
+.d.waiting{background:var(--amber);border-color:var(--amber)}.d.helping{background:var(--teal);color:#fff;border-color:var(--teal)}
+.d.off{background:var(--grey);color:#fff;border-color:var(--grey)}
+ul{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+li{display:flex;align-items:center;gap:8px;background:#fff;border-radius:12px;padding:10px 12px;border-left:6px solid var(--amber)}
+li.helping{border-left-color:var(--teal)}li>div{flex:1}li button{width:auto;margin:0;padding:10px 14px}
+li button.x{background:#e8edf7;color:var(--ink)}li.empty{border:0;color:var(--mut)}
+.key{display:flex;gap:12px;font-size:13px;color:var(--mut);margin-top:8px}
+</style></head><body>
+<section id="login"><h2>LabQueue – ครู</h2>
+<input id="em" type="email" placeholder="อีเมล" autocomplete="username"><input id="pw" type="password" placeholder="รหัสผ่าน" autocomplete="current-password">
+<button id="in">เข้าสู่ระบบ</button><p class="err" id="e1"></p></section>
+<div id="app" class="hide"><section><h2>ผังโต๊ะ</h2><div id="grid"></div>
+<div class="key"><span>🟧 รอ</span><span>🟩 กำลังช่วย</span><span>⬜ ว่าง</span><span>⬛ หลุดการเชื่อมต่อ</span></div></section>
+<section><h2>คิว</h2><ul id="q"></ul><p class="err" id="e2"></p></section></div>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script>
+let T = {}, P = {}, started = false;
+$('in').onclick = () => auth.signInWithEmailAndPassword($('em').value, $('pw').value).catch(() => $('e1').textContent = 'อีเมลหรือรหัสผ่านไม่ถูกต้อง');
+auth.onAuthStateChanged(u => { if (u && !u.isAnonymous) { $('login').classList.add('hide'); $('app').classList.remove('hide'); init(u); } });
+
+function init(u) {
+  if (started) return; started = true;
+  R('tickets').on('value', s => { T = s.val() || {}; rank(); draw(); },
+    () => $('e2').textContent = 'ยังไม่มีสิทธิ์ครู: เพิ่ม teachers/' + u.uid + ' = true ใน Realtime Database');
+  R('presence').on('value', s => { P = s.val() || {}; draw(); });
+  setInterval(() => document.querySelectorAll('[data-s]').forEach(e => e.textContent = fmt(Date.now() + off - e.dataset.s)), 1000);
+}
+const waiting = () => Object.values(T).filter(x => x.status === 'waiting').sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
+function rank() {                       // ครูเป็นคนเดียวที่เขียนลำดับคิว (pos) ให้นักเรียนเห็น
+  const u = {}; waiting().forEach((x, i) => { if (x.pos !== i + 1) u[x.table + '/pos'] = i + 1; });
+  if (Object.keys(u).length) R('tickets').update(u).catch(() => {});
+}
+function draw() {
+  let g = '';
+  for (let i = 1; i <= 40; i++) {
+    const t = T[i], p = P[i]; let c = 'idle', x = '';
+    if (t) { c = t.status; x = t.status === 'waiting' ? 'คิว ' + (t.pos || '–') : 'ช่วยอยู่'; }
+    else if (p && p.online === false) { c = 'off'; x = 'หลุด'; }
+    g += '<div class="d ' + c + '"><b>' + i + '</b><small>' + x + '</small></div>';
+  }
+  $('grid').innerHTML = g;
+  const rows = [...waiting(), ...Object.values(T).filter(x => x.status === 'helping')];
+  $('q').innerHTML = rows.map(x => {
+    const w = x.status === 'waiting';
+    return '<li class="' + x.status + '"><div><b>โต๊ะ ' + x.table + '</b> · เลขที่ ' + x.studentNo +
+      '<br><small>' + (w ? 'รอมา ' : 'ช่วยมา ') + '<span data-s="' + (w ? x.createdAt : x.helpingAt) + '"></span></small></div>' +
+      '<button onclick="' + (w ? 'take' : 'fin') + '(' + x.table + ')">' + (w ? 'รับงาน' : 'เสร็จสิ้น') + '</button>' +
+      '<button class="x" onclick="del(' + x.table + ')" aria-label="ลบคิว">✕</button></li>';
+  }).join('') || '<li class="empty">ยังไม่มีคิว</li>';
+}
+const take = t => R('tickets/' + t).update({ status: 'helping', helpingAt: TS });
+const del = t => confirm('ลบคิวโต๊ะ ' + t + ' ?') && R('tickets/' + t).remove();
+function fin(t) {                       // ย้ายตั๋วไป log แล้วลบออกจากคิว ในคำสั่งเดียว
+  const x = T[t]; if (!x) return; const id = R('log').push().key, u = {};
+  u['log/' + id] = { table: x.table, studentNo: x.studentNo, priority: x.priority, createdAt: x.createdAt, helpingAt: x.helpingAt, doneAt: TS };
+  u['tickets/' + t] = null;
+  db.ref('rooms/' + ROOM).update(u);
+}
+</script></body></html>

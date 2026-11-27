@@ -1,0 +1,76 @@
+<!doctype html><html lang="th"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LabQueue – นักเรียน</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#14213d;--mut:#5b6578;--paper:#f3f6fb;--blue:#2457ff;--amber:#f4a100;--teal:#0f9d8a;--red:#d62839}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:16px;background:var(--paper);color:var(--ink);font:18px/1.5 "Noto Sans Thai",Tahoma,sans-serif}
+main{width:min(420px,100%);background:#fff;border-radius:20px;padding:28px 24px;text-align:center;border:2px solid var(--ink)}
+h1{font-size:24px;margin:0 0 6px}p{margin:0 0 16px;color:var(--mut)}
+label{display:block;text-align:left;font-size:15px;color:var(--mut);margin-top:12px}
+input{width:100%;font:inherit;padding:12px;border:2px solid #cfd6e4;border-radius:12px}
+input:focus,button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+button{width:100%;font:inherit;font-weight:700;padding:16px;border:0;border-radius:14px;background:var(--blue);color:#fff;margin-top:16px;cursor:pointer}
+button.ghost{background:#e8edf7;color:var(--ink)}button:disabled{opacity:.5}
+.num{font-size:72px;font-weight:700;line-height:1;margin:8px 0}
+.amber{color:var(--amber)}.teal{color:var(--teal)}.hide{display:none}.err{color:var(--red);font-size:15px;min-height:22px;margin:8px 0 0}
+</style></head><body><main>
+<section id="v-login"><h1>เข้าห้องปฏิบัติการ</h1><p>ดูเลขโต๊ะที่ป้ายติดขอบจอ</p>
+<label for="t">เลขโต๊ะ (1–40)</label><input id="t" type="number" inputmode="numeric" min="1" max="40">
+<label for="n">เลขที่</label><input id="n" type="number" inputmode="numeric" min="1" max="60">
+<button id="go">เริ่มใช้งาน</button></section>
+
+<section id="v-idle" class="hide"><h1 id="who"></h1><p>ติดปัญหาหรือทำงานเสร็จแล้ว กดปุ่มด้านล่างได้เลย ไม่ต้องยกมือ</p>
+<button id="ask">ขอความช่วยเหลือ</button><button id="out" class="ghost">เปลี่ยนโต๊ะ / เลขที่</button></section>
+
+<section id="v-wait" class="hide"><h1>รอครูมาที่โต๊ะคุณ</h1><p>คิวของคุณ</p><div class="num amber" id="pos">–</div>
+<p>รอมาแล้ว <b id="tm">0:00</b> นาที<br>ระหว่างรอ ลองทำงานส่วนที่ทำได้ต่อไปก่อน</p>
+<button id="cancel" class="ghost">ยกเลิกคิว</button></section>
+
+<section id="v-help" class="hide"><h1 class="teal">ครูกำลังมาช่วย</h1><div class="num teal">✓</div><p>รอครูสักครู่ที่โต๊ะของคุณ</p></section>
+<p class="err" id="err"></p>
+</main>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script>
+let me = JSON.parse(sessionStorage.getItem('lq') || 'null'), tRef, ticket = null, started = false;
+const show = v => ['login','idle','wait','help'].forEach(k => $('v-' + k).classList.toggle('hide', k !== v));
+auth.signInAnonymously().catch(e => $('err').textContent = 'เชื่อมต่อไม่ได้ (' + e.code + ') แจ้งครู');
+auth.onAuthStateChanged(u => { if (u && me) start(); });
+if (!me) show('login');
+
+$('go').onclick = () => {
+  const t = +$('t').value, n = +$('n').value;
+  if (!(t >= 1 && t <= 40 && n >= 1 && n <= 60)) return $('err').textContent = 'กรอกเลขโต๊ะ 1–40 และเลขที่ให้ถูกต้อง';
+  me = { t, n }; sessionStorage.setItem('lq', JSON.stringify(me));
+  $('err').textContent = ''; if (auth.currentUser) start();
+};
+function start() {
+  if (started) return; started = true;
+  $('who').textContent = 'โต๊ะ ' + me.t + ' · เลขที่ ' + me.n;
+  db.ref('.info/connected').on('value', s => {            // บอกครูว่าโต๊ะนี้หลุดการเชื่อมต่อ
+    if (!s.val()) return; const p = R('presence/' + me.t);
+    p.onDisconnect().set({ online: false, at: TS }).then(() => p.set({ online: true, at: TS }));
+  });
+  tRef = R('tickets/' + me.t);
+  tRef.on('value', s => { ticket = s.val(); render(); },
+    () => { show('idle'); $('err').textContent = 'โต๊ะนี้มีคำขอค้างอยู่ กรุณาแจ้งครู'; });
+}
+function render() {
+  if (!ticket) return show('idle');
+  if (ticket.status === 'helping') return show('help');
+  $('pos').textContent = ticket.pos || '–'; show('wait');
+}
+$('ask').onclick = async () => {
+  $('ask').disabled = true; $('err').textContent = '';
+  try { await tRef.set({ table: me.t, studentNo: me.n, priority: 2, status: 'waiting', uid: auth.currentUser.uid, createdAt: TS }); }
+  catch (e) { $('err').textContent = 'ส่งไม่สำเร็จ ลองกดอีกครั้ง'; }
+  $('ask').disabled = false;
+};
+$('cancel').onclick = () => tRef.remove().catch(() => $('err').textContent = 'ยกเลิกไม่ได้ ครูรับงานแล้ว');
+$('out').onclick = () => { sessionStorage.clear(); location.reload(); };
+setInterval(() => { if (ticket && ticket.status === 'waiting' && ticket.createdAt) $('tm').textContent = fmt(Date.now() + off - ticket.createdAt); }, 1000);
+</script></body></html>
